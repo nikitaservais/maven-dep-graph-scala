@@ -41,7 +41,7 @@ def parseLine(line: String): MavenDependency = {
 }
 
 object Main extends App {
-  implicit val system: ActorSystem = ActorSystem("QuickStart")
+  implicit val system: ActorSystem = ActorSystem("MavenDependencyParser")
 
   val source = FileIO.fromPath(Paths.get("maven_dependencies.csv"))
 
@@ -107,7 +107,6 @@ object Main extends App {
     .via(throttle)
     .via(buffer)
     .via(countDependenciesFlow) // Using the custom Flow
-    .takeWithin(1.second)
 
   val sink = Sink.foreach(println)
 
