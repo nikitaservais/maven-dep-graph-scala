@@ -82,14 +82,32 @@ object Main extends App {
     FlowShape(broadcast.in, zip.out)
   }
 
-  val countDependenciesFlow = Flow.fromGraph(countDependenciesGraph)
+  val balanceAndCountDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
+    import GraphDSL.Implicits._
+
+    // Define the stages
+    val balance = builder.add(Balance[MavenLibrary](2))
+    val merge = builder.add(Merge[MavenLibrary](2))
+
+    // Instantiate countDependenciesGraph for each pipeline
+    val countDependenciesFlow1 = builder.add(countDependenciesGraph)
+    val countDependenciesFlow2 = builder.add(countDependenciesGraph)
+
+    // Connect the stages
+    balance.out(0) ~> countDependenciesFlow1 ~> merge.in(0)
+    balance.out(1) ~> countDependenciesFlow2 ~> merge.in(1)
+
+    FlowShape(balance.in, merge.out)
+  }
+
+  val countDependenciesFlow = Flow.fromGraph(balanceAndCountDependenciesGraph)
 
   val flow = parseFile.via(instantiateClasses)
     .via(groupByLibraryName)
     .via(throttle)
     .via(buffer)
-    .via(Flow.fromGraph(countDependenciesFlow)) // Using the custom Flow
-    .map(_.toString)
+    .via(countDependenciesFlow) // Using the custom Flow
+    .takeWithin(1.second)
 
   val sink = Sink.foreach(println)
 
