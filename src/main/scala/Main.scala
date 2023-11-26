@@ -1,13 +1,15 @@
+import akka.NotUsed
 import akka.actor.ActorSystem
-import akka.stream.{FlowShape, Graph}
+import akka.stream.{FlowShape, Graph, IOResult}
 import akka.stream.scaladsl.*
 import akka.util.ByteString
 
 import java.nio.file.Paths
 import concurrent.duration.DurationInt
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.Future
+import scala.util.{Failure, Success}
 
-val MAX_SUBSTREAMS = 185
-val GroupsPerSecond = 10 // Throttle rate
 
 case class MavenDependency(library: Library, dependency: Dependency)
 
@@ -17,9 +19,8 @@ case class Dependency(GroupId: String, ArtifactId: String, Version: String, Depe
 
 case class MavenLibrary(library: Library, dependencies: List[Dependency], compileCount: Int, runtimeCount: Int) {
   override def toString: String = {
-    val numberOfCharacters = library.GroupId.length + library.ArtifactId.length + library.Version.length
-    val numberOfSpaces = 65 - numberOfCharacters
-    s"Name: ${library.GroupId} ${library.ArtifactId} ${library.Version} ${" " * numberOfSpaces}--> Compile: ${compileCount}${" " * (3 - compileCount.toString.length)} Runtime: ${runtimeCount}"
+    val numberOfSpaces = 65 - (library.GroupId.length + library.ArtifactId.length + library.Version.length)
+    s"Name: ${library.GroupId} ${library.ArtifactId} ${library.Version} ${" " * numberOfSpaces}--> Compile: $compileCount${" " * (3 - compileCount.toString.length)} Runtime: $runtimeCount"
   }
 }
 
@@ -27,62 +28,55 @@ enum DependencyType {
   case COMPILE, RUNTIME
 }
 
-def parseLine(line: String): MavenDependency = {
-  val parts = line.split(",")
-  val libraryParts = parts(0).split(":")
-  val dependencyParts = parts(1).split(":")
-  val library = Library(libraryParts(0), libraryParts(1), libraryParts(2))
-  val dependencyType = parts(2) match {
-    case "Compile" => DependencyType.COMPILE
-    case "Runtime" => DependencyType.RUNTIME
+object LineParser {
+  def parseLine(line: String): MavenDependency = {
+    val parts = line.split(",")
+    val library = parseLibrary(parts(0))
+    val dependency = parseDependency(parts(1), parts(2))
+    MavenDependency(library, dependency)
   }
-  val dependency = Dependency(dependencyParts(0), dependencyParts(1), dependencyParts(2), dependencyType)
-  MavenDependency(library, dependency)
+
+  private def parseLibrary(libraryStr: String): Library = {
+    val parts = libraryStr.split(":")
+    Library(parts(0), parts(1), parts(2))
+  }
+
+  private def parseDependency(dependencyStr: String, dependencyTypeStr: String): Dependency = {
+    val parts = dependencyStr.split(":")
+    val dependencyType = parseDependencyType(dependencyTypeStr)
+    Dependency(parts(0), parts(1), parts(2), dependencyType)
+  }
+
+  private def parseDependencyType(dependencyTypeStr: String): DependencyType = {
+    dependencyTypeStr match {
+      case "Compile" => DependencyType.COMPILE
+      case "Runtime" => DependencyType.RUNTIME
+    }
+  }
 }
 
-object Main extends App {
-  implicit val system: ActorSystem = ActorSystem("MavenDependencyParser")
+object DependencyCounter {
+  private def countDependencies(lib: MavenLibrary, dependencyType: DependencyType): MavenLibrary = {
+    lib.copy(
+      compileCount = if (dependencyType == DependencyType.COMPILE) lib.dependencies.count(_.DependencyType == dependencyType) else lib.compileCount,
+      runtimeCount = if (dependencyType == DependencyType.RUNTIME) lib.dependencies.count(_.DependencyType == dependencyType) else lib.runtimeCount
+    )
+  }
 
-  val source = FileIO.fromPath(Paths.get("maven_dependencies.csv"))
-
-  val parseFile = Framing.delimiter(ByteString("\n"), maximumFrameLength = 256, allowTruncation = true)
-    .map(_.utf8String)
-    .drop(1)
-
-  val instantiateClasses = Flow[String].map(parseLine)
-  // this will groups by Library, so the output is Library, List(Dependency)
-  val groupByLibraryName = Flow[MavenDependency].groupBy(MAX_SUBSTREAMS, _.library)
-    .fold(MavenLibrary(null, List(), 0, 0))((acc, value) => {
-      if (acc.library == null) {
-        MavenLibrary(value.library, List(value.dependency), 0, 0)
-      } else {
-        MavenLibrary(value.library, acc.dependencies :+ value.dependency, 0, 0)
-      }
-    })
-    .mergeSubstreams
-
-  val throttle = Flow[MavenLibrary].throttle(GroupsPerSecond, 1.second)
-
-  val buffer = Flow[MavenLibrary].buffer(5, akka.stream.OverflowStrategy.backpressure)
-
-  val countDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
+  private def countDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
     import GraphDSL.Implicits._
 
-    // Define the stages
     val broadcast = builder.add(Broadcast[MavenLibrary](2))
-    val countCompile = Flow[MavenLibrary].map(lib => lib.copy(compileCount = lib.dependencies.count(_.DependencyType == DependencyType.COMPILE)))
-    val countRuntime = Flow[MavenLibrary].map(lib => lib.copy(runtimeCount = lib.dependencies.count(_.DependencyType == DependencyType.RUNTIME)))
     val zip = builder.add(ZipWith[MavenLibrary, MavenLibrary, MavenLibrary]((compileLib, runtimeLib) =>
       MavenLibrary(compileLib.library, compileLib.dependencies, compileLib.compileCount, runtimeLib.runtimeCount)))
 
-    // Connect the stages
-    broadcast.out(0) ~> countCompile ~> zip.in0
-    broadcast.out(1) ~> countRuntime ~> zip.in1
+    broadcast.out(0) ~> Flow[MavenLibrary].map(countDependencies(_, DependencyType.COMPILE)) ~> zip.in0
+    broadcast.out(1) ~> Flow[MavenLibrary].map(countDependencies(_, DependencyType.RUNTIME)) ~> zip.in1
 
     FlowShape(broadcast.in, zip.out)
   }
 
-  val balanceAndCountDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
+  def balanceAndCountDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
     import GraphDSL.Implicits._
 
     // Define the stages
@@ -100,15 +94,63 @@ object Main extends App {
     FlowShape(balance.in, merge.out)
   }
 
-  val countDependenciesFlow = Flow.fromGraph(balanceAndCountDependenciesGraph)
+}
 
-  val flow = parseFile.via(instantiateClasses)
-    .via(groupByLibraryName)
-    .via(throttle)
-    .via(buffer)
-    .via(countDependenciesFlow) // Using the custom Flow
 
-  val sink = Sink.foreach(println)
+def getFile(file: String): Source[ByteString, Future[IOResult]] =
+  FileIO.fromPath(Paths.get(file))
 
-  source.via(flow).to(sink).run()
+def parseFile: Flow[ByteString, String, NotUsed] =
+  Framing.delimiter(ByteString("\n"), maximumFrameLength = 256, allowTruncation = true)
+    .map(_.utf8String)
+    .drop(1)
+
+def instantiateClasses: Flow[String, MavenDependency, NotUsed] =
+  Flow[String].map(LineParser.parseLine)
+
+def throttleGroups(groupsPerSecond: Int): Flow[MavenLibrary, MavenLibrary, NotUsed] =
+  Flow[MavenLibrary].throttle(groupsPerSecond, 1.second)
+
+def bufferGroups(bufferSize: Int): Flow[MavenLibrary, MavenLibrary, NotUsed] =
+  Flow[MavenLibrary].buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
+
+def countDependenciesFlow: Flow[MavenLibrary, MavenLibrary, NotUsed] =
+  Flow.fromGraph(DependencyCounter.balanceAndCountDependenciesGraph)
+
+def groupByLibraryName(maxSubstreams: Int): Flow[MavenDependency, MavenLibrary, NotUsed] =
+  Flow[MavenDependency].groupBy(maxSubstreams, _.library)
+    .fold(MavenLibrary(null, List(), 0, 0))((acc, value) => {
+      if (acc.library == null) {
+        MavenLibrary(value.library, List(value.dependency), 0, 0)
+      } else {
+        MavenLibrary(value.library, acc.dependencies :+ value.dependency, 0, 0)
+      }
+    })
+    .mergeSubstreams
+
+object Main extends App {
+  implicit val system: ActorSystem = ActorSystem("MavenDependencyParser")
+
+  private val maxSubstreams = 185
+  private val groupsPerSecond = 10
+  private val bufferSize = 5
+  private val file = "maven_dependencies.csv"
+
+  private val mavenDependencyParser = getFile(file)
+    .via(parseFile)
+    .via(instantiateClasses)
+    .via(groupByLibraryName(maxSubstreams))
+    .via(throttleGroups(groupsPerSecond))
+    .via(bufferGroups(bufferSize))
+    .via(countDependenciesFlow)
+    .runWith(Sink.foreach(println))
+
+  mavenDependencyParser.onComplete {
+    case Success(_) =>
+      println("Maven dependency parser processing completed successfully.")
+      system.terminate()
+    case Failure(e) =>
+      println(s"Maven dependency parser  processing failed with: ${e.getMessage}")
+      system.terminate()
+  }
 }
