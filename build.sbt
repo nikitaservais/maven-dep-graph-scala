@@ -4,12 +4,8 @@ lazy val root = project
   .in(file("."))
   .settings(
     name := "maven-dep-graph-scala",
-    version := "0.1.0-SNAPSHOT",
 
     scalaVersion := scala3Version,
   )
 
-libraryDependencies ++= Seq(
-  "com.typesafe.akka" %% "akka-stream" % "2.6.18", // Check for the latest compatible version
-  "com.github.tototoshi" %% "scala-csv" % "1.3.10"  // CSV parsing library
-)
+libraryDependencies += "com.typesafe.akka" %% "akka-stream" % "2.6.18"
