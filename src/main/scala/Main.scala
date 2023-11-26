@@ -28,7 +28,16 @@ enum DependencyType {
   case COMPILE, RUNTIME
 }
 
+/**
+ * Parses a line from the CSV file into a MavenDependency object.
+ */
 object LineParser {
+  /**
+   * Parses a line from the CSV file into a MavenDependency object.
+   *
+   * @param line The line to parse
+   * @return MavenDependency
+   */
   def parseLine(line: String): MavenDependency = {
     val parts = line.split(",")
     val library = parseLibrary(parts(0))
@@ -55,7 +64,16 @@ object LineParser {
   }
 }
 
+/**
+ * Counts the number of compile and runtime dependencies for each MavenLibrary.
+ */
 object DependencyCounter {
+  /**
+   * Counts the number of compile and runtime dependencies for each MavenLibrary.
+   * @param lib The MavenLibrary to count the dependencies for
+   * @param dependencyType The type of dependency to count
+   * @return MavenLibrary
+   */
   private def countDependencies(lib: MavenLibrary, dependencyType: DependencyType): MavenLibrary = {
     lib.copy(
       compileCount = if (dependencyType == DependencyType.COMPILE) lib.dependencies.count(_.DependencyType == dependencyType) else lib.compileCount,
@@ -76,6 +94,10 @@ object DependencyCounter {
     FlowShape(broadcast.in, zip.out)
   }
 
+  /**
+   * A graph that balances the MavenLibrary objects and counts the dependencies for each MavenLibrary.
+   * @return Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed]
+   */
   def balanceAndCountDependenciesGraph: Graph[FlowShape[MavenLibrary, MavenLibrary], akka.NotUsed] = GraphDSL.create() { implicit builder =>
     import GraphDSL.Implicits._
 
@@ -97,26 +119,58 @@ object DependencyCounter {
 }
 
 
+/**
+ * Gets a file as a stream of bytes.
+ * @param file The file to read from
+ * @return a source of bytes
+ */
 def getFile(file: String): Source[ByteString, Future[IOResult]] =
   FileIO.fromPath(Paths.get(file))
 
+/**
+ * Parses a file into a stream of lines.
+ * @return a flow of lines
+ */
 def parseFile: Flow[ByteString, String, NotUsed] =
   Framing.delimiter(ByteString("\n"), maximumFrameLength = 256, allowTruncation = true)
     .map(_.utf8String)
     .drop(1)
 
+/**
+ * Instantiates the classes from the lines.
+ * @return a flow of MavenDependency objects
+ */
 def instantiateClasses: Flow[String, MavenDependency, NotUsed] =
   Flow[String].map(LineParser.parseLine)
 
+/**
+ * Throttles the groups per second.
+ * @param groupsPerSecond The number of groups per second
+ * @return a flow of MavenLibrary objects
+ */
 def throttleGroups(groupsPerSecond: Int): Flow[MavenLibrary, MavenLibrary, NotUsed] =
   Flow[MavenLibrary].throttle(groupsPerSecond, 1.second)
 
+/**
+ * Buffers the groups.
+ * @param bufferSize The size of the buffer
+ * @return a flow of MavenLibrary objects
+ */
 def bufferGroups(bufferSize: Int): Flow[MavenLibrary, MavenLibrary, NotUsed] =
   Flow[MavenLibrary].buffer(bufferSize, akka.stream.OverflowStrategy.backpressure)
 
+/**
+ * Counts the dependencies for each MavenLibrary.
+ * @return a flow of MavenLibrary objects with the dependencies counted
+ */
 def countDependenciesFlow: Flow[MavenLibrary, MavenLibrary, NotUsed] =
   Flow.fromGraph(DependencyCounter.balanceAndCountDependenciesGraph)
 
+/**
+ * Groups the MavenDependency objects by library name.
+ * @param maxSubstreams The maximum number of substreams
+ * @return a flow of MavenLibrary objects
+ */
 def groupByLibraryName(maxSubstreams: Int): Flow[MavenDependency, MavenLibrary, NotUsed] =
   Flow[MavenDependency].groupBy(maxSubstreams, _.library)
     .fold(MavenLibrary(null, List(), 0, 0))((acc, value) => {
