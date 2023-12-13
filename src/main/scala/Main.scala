@@ -11,7 +11,7 @@ import scala.concurrent.Future
 import scala.util.{Failure, Success}
 
 
-case class MavenDependency(library: Library, dependency: Dependency)
+case class ParsedDependency(library: Library, dependency: Dependency)
 
 case class Library(GroupId: String, ArtifactId: String, Version: String)
 
@@ -38,11 +38,11 @@ object LineParser {
    * @param line The line to parse
    * @return MavenDependency
    */
-  def parseLine(line: String): MavenDependency = {
+  def parseLine(line: String): ParsedDependency = {
     val parts = line.split(",")
     val library = parseLibrary(parts(0))
     val dependency = parseDependency(parts(1), parts(2))
-    MavenDependency(library, dependency)
+    ParsedDependency(library, dependency)
   }
 
   private def parseLibrary(libraryStr: String): Library = {
@@ -140,7 +140,7 @@ def parseFile: Flow[ByteString, String, NotUsed] =
  * Instantiates the classes from the lines.
  * @return a flow of MavenDependency objects
  */
-def instantiateClasses: Flow[String, MavenDependency, NotUsed] =
+def instantiateClasses: Flow[String, ParsedDependency, NotUsed] =
   Flow[String].map(LineParser.parseLine)
 
 /**
@@ -171,8 +171,8 @@ def countDependenciesFlow: Flow[MavenLibrary, MavenLibrary, NotUsed] =
  * @param maxSubstreams The maximum number of substreams
  * @return a flow of MavenLibrary objects
  */
-def groupByLibraryName(maxSubstreams: Int): Flow[MavenDependency, MavenLibrary, NotUsed] =
-  Flow[MavenDependency].groupBy(maxSubstreams, _.library)
+def groupByLibrary(maxSubstreams: Int): Flow[ParsedDependency, MavenLibrary, NotUsed] =
+  Flow[ParsedDependency].groupBy(maxSubstreams, _.library)
     .fold(MavenLibrary(null, List(), 0, 0))((acc, value) => {
       if (acc.library == null) {
         MavenLibrary(value.library, List(value.dependency), 0, 0)
@@ -193,7 +193,7 @@ object Main extends App {
   private val mavenDependencyParser = getFile(file)
     .via(parseFile)
     .via(instantiateClasses)
-    .via(groupByLibraryName(maxSubstreams))
+    .via(groupByLibrary(maxSubstreams))
     .via(throttleGroups(groupsPerSecond))
     .via(bufferGroups(bufferSize))
     .via(countDependenciesFlow)
