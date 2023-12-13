@@ -46,14 +46,15 @@
     It makes use of GraphDSL to create a custom flow.
     One Graph is to balance the stream, this is to ensure that the stream is evenly distributed between the counters.
     A second Graph to count the dependencies types for each library.
-    This count graph, count the two types of dependencies, compile and runtime, separately.
+    The count graph, count the two types of dependencies, compile and runtime, separately.
     This count is added to the MavenLibray object with field names compileDependencies and runtimeDependencies.
     Finally, the two counts are merged into a single stream.
 
-    \subsection{Sink}
-    \textbf{Sink.foreach} is used for outputting the final result, demonstrating the role of a sink in stream processing. It use a custom \textit{toString} method to output the result in a special format.
+    \subsection*{Sink}
+    Sink is used for outputting the final result, demonstrating the role of a sink in stream processing. It use a custom \textit{toString} method to output the result in a special format.
 
-    \section{Conclusion}
+
+    \section*{Conclusion}
     The Maven Dependency Analysis project demonstrates the capabilities of Akka Streams in processing large datasets. By leveraging Scala and Akka Streams, the application efficiently and effectively analyzes Maven library dependencies.
 
 \end{document}
