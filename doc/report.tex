@@ -11,43 +11,47 @@
 
     \maketitle
 
-    \section{Introduction}
-    This report outlines the design decisions and implementation approach for the Maven Dependency Analysis project, accomplished using Akka Streams and Scala. The project's objective is to process library dependencies from the Maven repository, focusing on analyzing the number of compile and runtime dependencies for each library.
-
-    \section{Design Decisions}
-
-    \subsection{Akka Streams for Concurrent Processing}
+    \section*{Akka Streams for Concurrent Processing}
     Akka Streams were chosen as the foundation for this project due to their robust framework for building streaming applications with built-in support for backpressure. This ensures efficient resource utilization without overwhelming system components, which is vital for processing a large dataset of Maven library dependencies.
 
-    \subsection{Scala for Functional and Object-Oriented Paradigms}
+    \section*{Scala for Functional and Object-Oriented Paradigms}
     Scala offers a seamless integration of functional and object-oriented programming paradigms, ideal for creating immutable data structures and employing functional transformations. This aligns well with Akka Streams, which is built on top of Scala and Akka actors.
 
-    \subsection{Data Model Design}
-    The core data model includes case classes \textit{MavenDependency, Library, Dependency,} and \textit{MavenLibrary}, representing the library, its dependencies, and their types. Scala's case classes provide immutability and automatic getters, equals, hashCode, and toString methods.
-
-    \section{Akka Stream Components}
-
-    \subsection{Source}
+    \section*{Data representation}
+    The MavenLibrary class represents a Maven library with its dependencies.
+    The ParsedDependency represents a CSV line.
+    The Library type is a groupID, artifactID and a version.
+    The dependency type is a GroupID, artifactID, version and a dependency type.
+    \section*{Akka Stream Components}
+    \subsection*{Source}
     \textbf{FileIO.fromPath} is used for reading the CSV file, offering non-blocking IO operations essential for stream processing.
 
-    \subsection{Flow Components}
-    \begin{itemize}
-        \item \textbf{parseFile:} Parses the CSV file, using \texttt{Framing.delimiter} for efficient line handling.
-        \item \textbf{instantiateClasses:} Transforms CSV lines into \textit{MavenDependency} objects.
-        \item \textbf{groupByLibraryName:} Groups dependencies by library, showcasing stateful streaming operations.
-        \item \textbf{throttleGroups:} Throttles processing to 10 groups per second, managing backpressure.
-        \item \textbf{bufferGroups:} Buffers the stream with a capacity of 5 elements, handling data flow under load.
-        \item \textbf{countDependenciesFlow:} A custom flow created using GraphDSL to count dependencies in parallel.
-    \end{itemize}
+    \subsection*{parseFile}
+    Parses the CSV file, using \texttt{Framing.delimiter} for efficient line handling.
+    \subsection*{instantiateClasses}
+    Transforms CSV lines into \textit{ParsedDependency} objects.
+    \subsection*{groupByLibraryName}
+    Groups dependencies by library, showcasing stateful streaming operations.
+    Using groupBy, the stream is split into substreams, one for each library.
+    Then fold the substream into a single value, the library and its dependencies, MavenLibrary.
+    Finally, merge the substreams back into a single stream.
+    It takes the max number substreams, this is to limit the number of entries, in this case the number of libraries.
+    \subsection*{throttleGroups}
+    Throttles the stream to groupsPerSecond argument every second (in this case 10 libraries per second).
+    \subsection*{bufferGroups}
+    Buffers the stream to bufferGroups argument (in this case 100 libraries).
+    The strategy used is OverflowStrategy.backpressure, this is to ensure that the stream does not overflow.
+    \subsection*{countDependenciesFlow}
+    This is the main flow of the application, it counts the number of dependencies for each library.
+    It makes use of GraphDSL to create a custom flow.
+    One Graph is to balance the stream, this is to ensure that the stream is evenly distributed between the counters.
+    A second Graph to count the dependencies types for each library.
+    This count graph, count the two types of dependencies, compile and runtime, separately.
+    This count is added to the MavenLibray object with field names compileDependencies and runtimeDependencies.
+    Finally, the two counts are merged into a single stream.
 
     \subsection{Sink}
-    \textbf{Sink.foreach} is used for outputting the final result, demonstrating the role of a sink in stream processing.
-
-    \section{GraphDSL for Custom Flows}
-    GraphDSL allows the creation of complex stream processing topologies, used here for the \textit{countDependenciesFlow}.
-
-    \section{Throttling and Buffering Strategies}
-    Throttling and buffering are employed to manage the data flow, ensuring system responsiveness and stability.
+    \textbf{Sink.foreach} is used for outputting the final result, demonstrating the role of a sink in stream processing. It use a custom \textit{toString} method to output the result in a special format.
 
     \section{Conclusion}
     The Maven Dependency Analysis project demonstrates the capabilities of Akka Streams in processing large datasets. By leveraging Scala and Akka Streams, the application efficiently and effectively analyzes Maven library dependencies.
